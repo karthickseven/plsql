@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VRM Viewer - Idle Animation</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <div class="box"><h3>Sana</h3></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VRMLoaderPlugin, VRMUtils, VRMExpressionPresetName } from 'https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.0.6/lib/three-vrm.module.js';
+
+// --------------------
+// GLOBALS
+// --------------------
+let scene, camera, renderer, controls;
+let vrm;
+const clock = new THREE.Clock();
+const TARGET_FPS =  /Mobi|Android/i.test(navigator.userAgent) ? 30 : 45;
+const FRAME_DURATION = 1 / TARGET_FPS;
+let lastFrameTime = 0;
+
+// Blink state
+let blinkTimer = 0;
+let nextBlinkTime = 2;
+let isBlinking = false;
+let blinkProgress = 0;
+
+// Idle animation state
+let idleTime = 0;
+
+// --------------------
+// INIT SCENE
+// --------------------
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xeeeeee);
+
+  camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
+  camera.position.set(0, 1.4, 2.5);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+  document.body.appendChild(renderer.domElement);
+
+  // Orbit controls for camera
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 1.0, 0);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+  controls.update();
+
+  // Lighting - bright to show original model colors
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  
+  // Strong ambient light for even illumination
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  
+  // Main light from front
+scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+
+const light = new THREE.DirectionalLight(0xffffff, 0.6);
+light.position.set(0, 1, 1);
+scene.add(light);
+
+
+  // Handle resize
+  window.addEventListener('resize', onResize);
+}
+
+function onResize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+
+// --------------------
+// LOAD VRM MODEL
+// --------------------
+function loadVRM() {
+  const loader = new GLTFLoader();
+  loader.register(p => new VRMLoaderPlugin(p));
+
+  loader.load(
+    'radien.glb',  // 3rd model
+    (gltf) => {
+      vrm = gltf.userData.vrm;
+
+      VRMUtils.removeUnnecessaryVertices(vrm.scene);
+      VRMUtils.removeUnnecessaryJoints(vrm.scene);
+
+      // VRM faces -Z, rotate 180° to face camera
+      vrm.scene.rotation.y = Math.PI;
+
+      scene.add(vrm.scene);
+
+      console.log("✅ VRM loaded:", vrm);
+
+    // --- ENABLE JIGGLE PHYSICS ---
+// ===============================
+// 🫨 CHEST JIGGLE PHYSICS
+// ===============================
+if (vrm.springBoneManager) {
+
+  vrm.springBoneManager.springBones.forEach((spring) => {
+
+    const name = spring.joint?.bone?.name?.toLowerCase() || "";
+
+    // 🎯 target chest / bust bones
+    if (
+      name.includes("bust") ||
+      name.includes("chest") ||
+      name.includes("breast")
+    ) {
+      spring.stiffness = 0.12;     // ⬇ softer = more jiggle
+      spring.gravityPower = 0.35;  // ⬆ bounce
+      spring.dragForce = 0.45;     // ⬇ slower damping
+      spring.hitRadius = 0.03;     // ⬆ soft collision
+
+      console.log("🫨 Chest jiggle enabled on:", name);
+    }
+  });
+}
+
+
+    },
+    (progress) => {
+      if (progress.total > 0) {
+        console.log("Loading VRM:", ((progress.loaded / progress.total) * 100).toFixed(1) + "%");
+      }
+    },
+    (error) => console.error("❌ VRM load error:", error)
+  );
+}
+
+// --------------------
+// --------------------
+// EYE BLINK ANIMATION
+// --------------------
+function updateBlink(delta) {
+  if (!vrm || !vrm.expressionManager) return;
+
+  blinkTimer += delta;
+
+  if (!isBlinking) {
+    // Wait for next blink
+    if (blinkTimer >= nextBlinkTime) {
+      isBlinking = true;
+      blinkProgress = 0;
+      blinkTimer = 0;
+      // Random interval between blinks (2-5 seconds)
+      nextBlinkTime = 2 + Math.random() * 3;
+    }
+  } else {
+    // Perform blink animation
+    blinkProgress += delta * 10; // Speed of blink
+    
+    if (blinkProgress < 1) {
+      // Closing eyes
+      vrm.expressionManager.setValue(VRMExpressionPresetName.Blink, blinkProgress);
+    } else if (blinkProgress < 2) {
+      // Opening eyes
+      vrm.expressionManager.setValue(VRMExpressionPresetName.Blink, 2 - blinkProgress);
+    } else {
+      // Blink complete
+      vrm.expressionManager.setValue(VRMExpressionPresetName.Blink, 0);
+      isBlinking = false;
+    }
+  }
+}
+
+
+// --------------------
+// IDLE POSE ANIMATION (breathing + subtle sway)
+// --------------------
+// Random head movement
+let headTargetY = 0;
+let headTargetX = 0;
+let headChangeTimer = 0;
+let headChangeInterval = 2.5; // seconds
+
+function updateIdleAnimation(delta) {
+  if (!vrm) return;
+
+  idleTime += delta;
+
+  // Get bones
+  const hips = vrm.humanoid.getNormalizedBoneNode('hips');
+  const spine = vrm.humanoid.getNormalizedBoneNode('spine');
+  const chest = vrm.humanoid.getNormalizedBoneNode('chest');
+  const upperChest = vrm.humanoid.getNormalizedBoneNode('upperChest');
+  const head = vrm.humanoid.getNormalizedBoneNode('head');
+  const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
+  const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+
+  // Breathing cycle (inhale/exhale ~4 seconds)
+  const breathCycle = Math.sin(idleTime * 1.5);
+  
+  // Chest breathing
+  if (chest) {
+    chest.rotation.x = breathCycle * 0.02;
+  }
+  if (upperChest) {
+    upperChest.rotation.x = breathCycle * 0.015;
+  }
+  if (spine) {
+    spine.rotation.x = breathCycle * 0.01;
+  }
+
+  // Subtle body sway (slower)
+  const swayCycle = Math.sin(idleTime * 0.5);
+  if (hips) {
+    hips.rotation.y = swayCycle * 0.01;
+  }
+  if (spine) {
+    spine.rotation.z = swayCycle * 0.005;
+  }
+
+  if (head) {
+  headChangeTimer += delta;
+
+  // Pick a new random target every few seconds
+  if (headChangeTimer > headChangeInterval) {
+    headTargetY = THREE.MathUtils.randFloat(-0.6, 0.6); // ⬅ bigger left/right
+    headTargetX = THREE.MathUtils.randFloat(-0.25, 0.25); // ⬅ bigger up/down
+    headChangeTimer = 0;
+    headChangeInterval = 1.5 + Math.random() * 2.5; // ⬅ more frequent
+  }
+
+  // Faster, smoother interpolation
+  head.rotation.y = THREE.MathUtils.lerp(
+    head.rotation.y,
+    headTargetY,
+    0.05 // ⬅ was 0.02
+  );
+
+  head.rotation.x = THREE.MathUtils.lerp(
+    head.rotation.x,
+    headTargetX,
+    0.05
+  );
+}
+
+
+  // Keep arms down with very subtle movement
+  if (leftUpperArm) {
+    leftUpperArm.rotation.z = 1.30 + swayCycle * 0.01;  // Arms down at sides
+    leftUpperArm.rotation.x = 0.05;
+  }
+  if (rightUpperArm) {
+    rightUpperArm.rotation.z = -1.30 - swayCycle * 0.01; // Arms down at sides  
+    rightUpperArm.rotation.x = 0.05;
+  }
+}
+// Tail animation
+let tailTime = 0;
+let tailBones = []; // Cache tail bones after finding them
+
+function findTailBones() {
+  if (!vrm || tailBones.length > 0) return;
+  
+  // Search the entire scene for bones with "tail" or "foxtail" in the name
+  // Exclude "end" bones which are just markers
+  vrm.scene.traverse((obj) => {
+    if (obj.isBone && 
+        obj.name.toLowerCase().includes('tail') && 
+        !obj.name.toLowerCase().includes('end')) {
+      tailBones.push(obj);
+      console.log('🦊 Found tail bone:', obj.name);
+    }
+  });
+  
+  // Sort by name to ensure proper order (tail1, tail2, tail3, etc.)
+  tailBones.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  
+  if (tailBones.length > 0) {
+    console.log(`✅ Total tail bones found: ${tailBones.length}`);
+  } else {
+    // If no bones found, try finding ALL bones and log them
+    console.log('❌ No tail bones found. Listing all bones:');
+    vrm.scene.traverse((obj) => {
+      if (obj.isBone) {
+        console.log('  Bone:', obj.name);
+      }
+    });
+  }
+  
+  // Disable spring bones for tail if they exist
+  if (vrm.springBoneManager) {
+    console.log('🔧 Spring bone manager found, tail may have physics');
+  }
+}
+
+
+
+
+// --------------------
+// ANIMATION LOOP (60 FPS)
+// --------------------
+function animate(currentTime) {
+  requestAnimationFrame(animate);
+
+  // Convert to seconds
+  const time = currentTime / 1000;
+  const elapsed = time - lastFrameTime;
+
+  // Limit to target FPS
+  if (elapsed < FRAME_DURATION) return;
+
+  lastFrameTime = time - (elapsed % FRAME_DURATION);
+
+  const delta = clock.getDelta();
+
+  // Update VRM-specific features (expressions, spring bones)
+  if (vrm) {
+    updateIdleAnimation(delta);
+    updateBlink(delta);
+    vrm.update(delta);  
+  }
+
+  // Update controls
+  controls.update();
+
+  // Render
+  renderer.render(scene, camera);
+}
+
+// --------------------
+// START
+// --------------------
+init();
+loadVRM();
+requestAnimationFrame(animate);
+
+// --------------------
+// AUTO FULLSCREEN (works on mobile too)
+// --------------------
+function enterFullscreen() {
+  const elem = document.documentElement;
+  
+  if (elem.requestFullscreen) {
+    elem.requestFullscreen();
+  } else if (elem.webkitRequestFullscreen) { // Safari
+    elem.webkitRequestFullscreen();
+  } else if (elem.msRequestFullscreen) { // IE/Edge
+    elem.msRequestFullscreen();
+  } else if (elem.mozRequestFullScreen) { // Firefox
+    elem.mozRequestFullScreen();
+  }
+}
+
+// Fullscreen on first user interaction (required by browsers)
+function onFirstInteraction() {
+  enterFullscreen();
+  // Remove listeners after first interaction
+  document.removeEventListener('click', onFirstInteraction);
+  document.removeEventListener('touchstart', onFirstInteraction);
+  document.removeEventListener('keydown', onFirstInteraction);
+}
+
+// Listen for user interaction to trigger fullscreen
+document.addEventListener('click', onFirstInteraction);
+document.addEventListener('touchstart', onFirstInteraction);
+document.addEventListener('keydown', onFirstInteraction);
+
+// Also try on page load (may work in some contexts)
+window.addEventListener('load', () => {
+  // Show instruction overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'fullscreen-hint';
+  overlay.innerHTML = '👆 Tap or click to enter fullscreen';
+  overlay.style.cssText = `
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.7);
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-family: sans-serif;
+    font-size: 14px;
+    z-index: 1000;
+    pointer-events: none;
+  `;
+  document.body.appendChild(overlay);
+  
+  // Hide overlay after fullscreen or timeout
+  setTimeout(() => {
+    if (overlay.parentNode) overlay.remove();
+  }, 5000);
+  
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement && overlay.parentNode) {
+      overlay.remove();
+    }
+  });
+});
+
+// Exit fullscreen with ESC (already built-in) or double-tap
+let lastTap = 0;
+document.addEventListener('touchend', (e) => {
+  const now = Date.now();
+  if (now - lastTap < 300) {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      enterFullscreen();
+    }
+  }
+  lastTap = now;
+});
+
+console.log("🎮 VRM Viewer initialized - Target: 60 FPS");
+</script>
+
+</body>
+</html>
